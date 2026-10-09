@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block topo %}<a href="/sair">Sair</a>{% endblock %}
+{% block corpo %}
+{% if aviso_sem_senha %}<p class="aviso">APP_PASSWORD não definida: o acesso está aberto. Defina a senha antes de publicar.</p>{% endif %}
+<div class="card" id="form">
+<h2>1. Envie os arquivos</h2>
+<label>BASE COMPLETA de cartões presentes cadastrados</label>
+<input type="file" id="base" accept=".xlsx">
+<label>Apurações do mês (pode selecionar várias)</label>
+<input type="file" id="apur" accept=".xlsx" multiple>
+<p class="small">Cada apuração precisa ter uma aba de premiação ("Premiados" ou "Premiações"). Os arquivos são apagados do servidor logo após o processamento; os resultados ficam disponíveis por 2 horas.</p>
+<p><button id="go">Gerar vales</button> <span id="envio" class="small"></span></p>
+</div>
+<div class="card" id="prog" style="display:none"><h2>2. Processando</h2><div id="msg"></div><div class="barra"><i></i></div></div>
+<div class="card" id="res" style="display:none"></div>
+<script>
+const $=id=>document.getElementById(id);
+const fmt=v=>'R$ '+Number(v).toLocaleString('pt-BR');
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function enviarArquivo(job,tipo,file,rotulo){
+  return new Promise((ok,falha)=>{
+    const fd=new FormData();fd.append('tipo',tipo);fd.append('arquivo',file);
+    const x=new XMLHttpRequest();x.open('POST','/arquivo/'+job);
+    x.upload.onprogress=e=>{if(e.lengthComputable)$('envio').textContent=rotulo+' — '+Math.round(e.loaded/e.total*100)+'%'};
+    x.onload=()=>{let r={};try{r=JSON.parse(x.responseText)}catch(e){}
+      x.status==200?ok():falha(new Error(r.erro||('Falha ao enviar '+file.name+' ('+x.status+')')))};
+    x.onerror=()=>falha(new Error('Falha de conexão ao enviar '+file.name));
+    x.send(fd)})}
+$('go').onclick=async()=>{
+  if(!$('base').files[0]||!$('apur').files.length){alert('Selecione a base e ao menos uma apuração.');return}
+  $('go').disabled=true;$('res').style.display='none';
+  try{
+    const job=(await (await fetch('/novo',{method:'POST'})).json()).job;
+    const fila=[['base',$('base').files[0]],...[...$('apur').files].map(f=>['apuracao',f])];
+    for(let i=0;i<fila.length;i++)await enviarArquivo(job,fila[i][0],fila[i][1],'Enviando '+(i+1)+'/'+fila.length+' · '+fila[i][1].name);
+    const r=await fetch('/iniciar/'+job,{method:'POST'});
+    if(!r.ok)throw new Error((await r.json()).erro||'Falha ao iniciar');
+    $('envio').textContent='';$('prog').style.display='block';acompanhar(job);
+  }catch(e){$('go').disabled=false;$('envio').innerHTML='<span class=erro>'+esc(e.message)+'</span>'}};
+function acompanhar(job){
+  const t=setInterval(async()=>{
+    const r=await fetch('/status/'+job);if(!r.ok){clearInterval(t);$('msg').textContent='Processo não encontrado (expirou?).';return}
+    const d=await r.json();$('msg').textContent=d.msg;
+    if(d.status!='rodando'){clearInterval(t);$('go').disabled=false;$('prog').style.display='none';mostrar(job,d)}
+  },2000)}
+function mostrar(job,d){
+  const c=$('res');c.style.display='block';
+  if(d.status=='erro'){c.innerHTML='<h2 class=erro>Erro</h2><p>'+esc(d.msg)+'</p>';return}
+  let h='<h2>3. Resultado</h2><table><tr><th>Apuração</th><th>Com cadastro</th><th>Sem cadastro</th><th>Total</th><th></th></tr>';
+  for(const r of d.resultados){
+    if(!r.ok){h+='<tr><td>'+esc(r.arquivo)+'</td><td colspan=4 class=erro>'+esc(r.erro)+'</td></tr>';continue}
+    h+='<tr><td>'+esc(r.arquivo)+'</td><td>'+r.com+' ('+fmt(r.total_com)+')</td><td>'+(r.sem?'<b class=erro>'+r.sem+'</b> ('+fmt(r.total_sem)+')':'0')+'</td><td>'+fmt(r.total)+'</td><td>'+
+      '<a href="/baixar/'+job+'/'+encodeURIComponent(r.saida_nome)+'">baixar</a>'+(r.pessoas?'':' <span class=small>(sem premiados)</span>')+'</td></tr>'}
+  h+='</table><p><button id="todos">Baixar todos os arquivos</button> <span class="small">(o navegador pode pedir permissão para baixar vários)</span></p>';
+  const sem=d.resultados.filter(r=>r.ok&&r.sem);
+  if(sem.length){h+='<h2>Sem cadastro ('+d.n_sem+') — precisam ser cadastrados</h2><table><tr><th>Apuração</th><th>Nome</th><th>Valor</th></tr>';
+    for(const r of sem)for(const p of r.sem_lista)h+='<tr><td>'+esc(r.arquivo)+'</td><td>'+esc(p.nome)+'</td><td>'+fmt(p.valor)+'</td></tr>';
+    h+='</table><p><a class="btn sec" href="/baixar/'+job+'/SEM_CADASTRO_consolidado.xlsx">Baixar lista consolidada</a></p>'}
+  const ap=d.resultados.filter(r=>r.ok&&r.aproximados&&r.aproximados.length);
+  if(ap.length){h+='<h2>Conferir: cadastros encontrados por nome aproximado</h2><p class=small>O nome da apuração não era igual ao da base; o sistema usou o mais parecido. Confirme se é a mesma pessoa.</p><table><tr><th>Apuração</th><th>Nome na apuração</th><th>Nome na base</th><th>Valor</th></tr>';
+    for(const r of ap)for(const p of r.aproximados)h+='<tr><td>'+esc(r.arquivo)+'</td><td>'+esc(p.apuracao)+'</td><td>'+esc(p.base)+'</td><td>'+fmt(p.valor)+'</td></tr>';h+='</table>'}
+  c.innerHTML=h;
+  const todos=$('todos');if(todos)todos.onclick=async()=>{for(const r of d.resultados.filter(r=>r.ok)){const a=document.createElement('a');a.href='/baixar/'+job+'/'+encodeURIComponent(r.saida_nome);a.download=r.saida_nome;document.body.appendChild(a);a.click();a.remove();await new Promise(z=>setTimeout(z,900))}}}
+</script>
+{% endblock %}

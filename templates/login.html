@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block corpo %}
+<div class="card" style="max-width:380px;margin:60px auto">
+<h2>Acesso restrito</h2>
+<form method="post"><label>Senha do Núcleo</label><input type="password" name="senha" autofocus required>
+{% if erro %}<p class="erro">{{ erro }}</p>{% endif %}<p><button>Entrar</button></p></form></div>
+{% endblock %}
